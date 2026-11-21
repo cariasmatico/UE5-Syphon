@@ -74,6 +74,12 @@ public:
              meta = (EditCondition = "CaptureMode == ESyphonCaptureMode::SceneCapture", EditConditionHides))
    bool bMatchCameraAspect = true;
 
+   /** Publish with alpha = 1. Unreal's viewport/capture alpha is not real transparency (the main view's is 0),
+    *  so clients that alpha-blend the source (e.g. jit.gl.videoplane @blend_enable 1, SyncSuite) would show it
+    *  as transparent/black. Colours are unchanged. */
+   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Syphon")
+   bool bForceOpaqueAlpha = true;
+
    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Syphon")
    bool bShowDebug = false;
 
@@ -113,6 +119,7 @@ private:
 
    bool bRunning = false;
    ESyphonCaptureMode ActiveMode = ESyphonCaptureMode::MainView;
+   bool bActiveForceOpaque = true;
 
    TSharedPtr<class FSyphonViewExtension, ESPMode::ThreadSafe> ViewExtension;
 

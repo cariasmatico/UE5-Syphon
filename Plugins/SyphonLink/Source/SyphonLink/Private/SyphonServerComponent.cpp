@@ -20,17 +20,17 @@
 #if PLATFORM_MAC
 // Server lifetime calls go through the render thread onto the RHI thread, so they stay ordered
 // with the publish calls issued by FSyphonViewExtension.
-static void EnqueueSyphonStart(const FString &Name)
+static void EnqueueSyphonStart(const FString &Name, bool bForceOpaque)
 {
    ENQUEUE_RENDER_COMMAND(SyphonStart)(
-       [Name](FRHICommandListImmediate &RHICmdList)
+       [Name, bForceOpaque](FRHICommandListImmediate &RHICmdList)
        {
           RHICmdList.EnqueueLambda(TEXT("SyphonStart"),
-                                   [Name](FRHICommandListImmediate &)
+                                   [Name, bForceOpaque](FRHICommandListImmediate &)
                                    {
                                       void *Device = GDynamicRHI ? GDynamicRHI->RHIGetNativeDevice() : nullptr;
                                       void *Queue = GDynamicRHI ? GDynamicRHI->RHIGetNativeGraphicsQueue() : nullptr;
-                                      FSyphonServerBridge::Start(Name, Device, Queue);
+                                      FSyphonServerBridge::Start(Name, Device, Queue, bForceOpaque);
                                    });
        });
 }
@@ -133,7 +133,7 @@ void USyphonServerComponent::SetServerName(const FString &NewName)
    if (bRunning) // running -> restart the Syphon server under the new name
    {
       EnqueueSyphonStop();
-      EnqueueSyphonStart(ServerName);
+      EnqueueSyphonStart(ServerName, bActiveForceOpaque);
    }
 #endif
 }
@@ -151,8 +151,9 @@ void USyphonServerComponent::StartInternal()
    }
    bRunning = true;
    ActiveMode = CaptureMode;
+   bActiveForceOpaque = bForceOpaqueAlpha;
 
-   EnqueueSyphonStart(ServerName);
+   EnqueueSyphonStart(ServerName, bActiveForceOpaque);
    ViewExtension = FSceneViewExtensions::NewExtension<FSyphonViewExtension>(World);
 
    FTextureRenderTargetResource *CaptureResource = nullptr;
@@ -336,6 +337,13 @@ void USyphonServerComponent::TickComponent(float DeltaTime, ELevelTick TickType,
    {
       StopInternal();
       StartInternal();
+   }
+   if (bActiveForceOpaque != bForceOpaqueAlpha)
+   {
+      // Restart only the Syphon server; the capture pipeline is unaffected.
+      bActiveForceOpaque = bForceOpaqueAlpha;
+      EnqueueSyphonStop();
+      EnqueueSyphonStart(ServerName, bActiveForceOpaque);
    }
 
    const uint64 DebugKey = 0x5359504800000000ull + GetUniqueID();

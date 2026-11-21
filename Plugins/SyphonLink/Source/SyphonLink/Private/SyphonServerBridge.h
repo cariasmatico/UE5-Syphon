@@ -11,8 +11,10 @@
 class FSyphonServerBridge
 {
 public:
-   /** NativeDevice / NativeQueue: Unreal's MTLDevice and MTLCommandQueue (null -> create our own). */
-   static void Start(const FString &ServerName, void *NativeDevice, void *NativeQueue);
+   /** NativeDevice / NativeQueue: Unreal's MTLDevice and MTLCommandQueue (null -> create our own).
+    *  bForceOpaque: copy frames through a tiny Metal pass that writes alpha = 1, so clients that
+    *  alpha-blend the source (jit.gl.videoplane @blend_enable 1, compositors) don't see it as transparent. */
+   static void Start(const FString &ServerName, void *NativeDevice, void *NativeQueue, bool bForceOpaque);
    static void PublishTexture(void *MetalTexturePtr, int Width, int Height);
    static void Stop();
 };
