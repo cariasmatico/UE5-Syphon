@@ -58,31 +58,48 @@ For scene-based shows: after loading a new scene/sublevel, find its camera (e.g.
 Get All Actors With Tag ("SceneCam") → Get [0] → SyphonServer → Set Camera
 ```
 
+## Capture modes
+
+| Mode | What Syphon receives | Resolution | Cost |
+|---|---|---|---|
+| **Main View (exact camera)** — default | The game viewport's final image. The Camera Actor becomes player 0's view target, so *everything* the camera defines applies: CineCamera lens/filmback, depth of field, exposure, post-process settings and volumes, aspect-ratio constraint, camera shakes/fades. Captured after post-processing/upscaling and before UI, HUD and debug text. | Game viewport size (set the PIE *New Window Size*, or enable **Apply Resolution To Window** for Standalone/packaged) | None — no second render |
+| **Scene Capture (independent)** | A separate Scene Capture that copies the camera's full view each frame (`GetCameraView`: location, rotation, FOV, projection, ortho width, post-process settings incl. CineCamera DOF). Leaves the player's view alone. | Any preset or **Custom**; **Match Camera Aspect** derives the height from the camera's aspect ratio | A second scene render |
+
+Scene Capture is very close to the main view but not pixel-identical (temporal effects such as auto-exposure and TSR accumulate separately; motion blur is off).
+Frames are published with one frame of latency so the GPU copy is always finished before Syphon reads it.
+
 ## Component reference
 
 | Property | Type | Description |
 |---|---|---|
 | Server Name | String | Name shown in Syphon clients |
-| Enabled | Bool | Start/stop publishing |
-| Camera Actor | Actor | Camera the output follows (position, rotation, FOV) |
-| Resolution | Enum | 1280×720, 1920×1080, 2560×1440, 3840×2160 |
+| Enabled | Bool | Start/stop publishing (live) |
+| Capture Mode | Enum | Main View (exact camera) / Scene Capture (independent) — switchable live |
+| Camera Actor | Actor | Camera to publish |
+| Set View Target | Bool | Main View: keep Camera Actor as player 0's view target. Turn off if your own logic drives the view target |
+| Apply Resolution To Window | Bool | Main View, Standalone/packaged only: resize the window to Resolution |
+| Resolution | Enum | 1280×720, 1920×1080, 2560×1440, 3840×2160, Custom |
+| Custom Resolution | IntPoint | Used when Resolution = Custom |
+| Match Camera Aspect | Bool | Scene Capture: height follows the camera's aspect ratio |
 
 | Function | Description |
 |---|---|
-| Start Server | Creates the Syphon server and capture pipeline |
-| Stop Server | Stops publishing and tears down |
-| Set Camera | Retargets the output to another camera at runtime |
+| Start Server / Stop Server | Start or stop publishing |
+| Set Camera | Retargets the output to another camera at runtime (Main View: also sets the view target) |
+| Set Capture Mode | Switch modes at runtime |
+| Set Server Name | Rename (restarts the Syphon server) |
+| Is Server Running | Pure query |
 
 ## Known limitations (v1.0)
 
 - **One server per app** — the server is a singleton; multiple SyphonServer components will conflict
 - **Publishes during Play (PIE) and in packaged builds** — no output while idle in the editor
 - **Server only** — receiving Syphon sources *into* UE5 (client) is planned for v2
-- Tested on UE 5.7 / Apple Silicon only
+- Tested on UE 5.6 and 5.7 / Apple Silicon only
 
 ## How it works
 
-A `SceneCaptureComponent2D` renders the selected camera into a fixed-size render target. On the render thread, the render target's native Metal texture is handed to a `SyphonMetalServer`, which shares it with other apps via IOSurface. No pixels are copied or downloaded from the GPU.
+A scene view extension hooks the end of the game view render. It copies either the viewport's final image (Main View) or the Scene Capture's render target (Scene Capture) into a small texture ring on the GPU, and the native Metal texture is handed to a `SyphonMetalServer` on Unreal's own Metal command queue, which shares it with other apps via IOSurface. No pixels are copied or downloaded from the GPU.
 
 ## Licence
 
