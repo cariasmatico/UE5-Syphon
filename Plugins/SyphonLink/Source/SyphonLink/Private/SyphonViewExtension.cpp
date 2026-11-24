@@ -7,6 +7,10 @@
 #include "TextureResource.h"
 #include "RenderingThread.h"
 #include "RHICommandList.h"
+#include "RHIStaticStates.h"
+#include "ScreenPass.h"
+#include "CommonRenderResources.h"
+#include "GlobalShader.h"
 #if PLATFORM_MAC
 #include "SyphonServerBridge.h"
 #endif
@@ -43,6 +47,16 @@ void FSyphonViewExtension::SetEnabled_GameThread(bool bEnabled)
              This->ResetRing_RenderThread();
              This->CaptureResource_RT = nullptr;
           }
+       });
+}
+
+void FSyphonViewExtension::SetOverlay_GameThread(FTextureRenderTargetResource *OverlayResource)
+{
+   TSharedRef<FSyphonViewExtension, ESPMode::ThreadSafe> This = StaticCastSharedRef<FSyphonViewExtension>(AsShared());
+   ENQUEUE_RENDER_COMMAND(SyphonSetOverlay)(
+       [This, OverlayResource](FRHICommandListImmediate &)
+       {
+          This->OverlayResource_RT = OverlayResource;
        });
 }
 
@@ -117,7 +131,8 @@ void FSyphonViewExtension::PostRenderViewFamily_RenderThread(FRDGBuilder &GraphB
 
       FRDGTextureRef Source = FindOrRegister(GraphBuilder, Target, TEXT("SyphonViewFamilyTarget"));
       Rect.Clip(FIntRect(FIntPoint::ZeroValue, Source->Desc.Extent));
-      Publish_RenderThread(GraphBuilder, Source, Rect);
+      // The widget overlay covers the whole viewport (like UMG on screen): take the same rect from it.
+      Publish_RenderThread(GraphBuilder, View0->FeatureLevel, Source, Rect, Rect);
    }
    else
    {
@@ -131,12 +146,54 @@ void FSyphonViewExtension::PostRenderViewFamily_RenderThread(FRDGBuilder &GraphB
          return;
       }
       FRDGTextureRef Source = FindOrRegister(GraphBuilder, Capture, TEXT("SyphonSceneCapture"));
-      Publish_RenderThread(GraphBuilder, Source, FIntRect(FIntPoint::ZeroValue, Source->Desc.Extent));
+      Publish_RenderThread(GraphBuilder, View0->FeatureLevel, Source, FIntRect(FIntPoint::ZeroValue, Source->Desc.Extent),
+                           FIntRect() /* whole overlay */);
    }
 #endif
 }
 
-void FSyphonViewExtension::Publish_RenderThread(FRDGBuilder &GraphBuilder, FRDGTextureRef Source, const FIntRect &Rect)
+void FSyphonViewExtension::DrawOverlay_RenderThread(FRDGBuilder &GraphBuilder, ERHIFeatureLevel::Type FeatureLevel,
+                                                    FRDGTextureRef Dest, const FIntRect &InOverlayRect)
+{
+   if (!OverlayResource_RT)
+   {
+      return;
+   }
+   FRHITexture *OverlayRHI = OverlayResource_RT->GetRenderTargetTexture();
+   if (!OverlayRHI)
+   {
+      return;
+   }
+   FRDGTextureRef Overlay = FindOrRegister(GraphBuilder, OverlayRHI, TEXT("SyphonWidgetOverlay"));
+
+   const FIntRect Full(FIntPoint::ZeroValue, Overlay->Desc.Extent);
+   FIntRect OverlayRect = InOverlayRect.IsEmpty() ? Full : InOverlayRect;
+   OverlayRect.Clip(Full);
+   if (OverlayRect.IsEmpty())
+   {
+      return;
+   }
+
+   FGlobalShaderMap *ShaderMap = GetGlobalShaderMap(FeatureLevel);
+   TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
+   TShaderMapRef<FCopyRectPS> PixelShader(ShaderMap);
+
+   FCopyRectPS::FParameters *Parameters = GraphBuilder.AllocParameters<FCopyRectPS::FParameters>();
+   Parameters->InputTexture = Overlay;
+   Parameters->InputSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+   Parameters->RenderTargets[0] = FRenderTargetBinding(Dest, ERenderTargetLoadAction::ELoad);
+
+   // Slate writes premultiplied colour: out.rgb = widget.rgb + frame.rgb * (1 - widget.a). The frame's alpha is kept.
+   AddDrawScreenPass(GraphBuilder, RDG_EVENT_NAME("SyphonWidgetOverlay"), FScreenPassViewInfo(FeatureLevel),
+                     FScreenPassTextureViewport(Dest), FScreenPassTextureViewport(Overlay, OverlayRect),
+                     VertexShader, PixelShader,
+                     TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI(),
+                     TStaticDepthStencilState<false, CF_Always>::GetRHI(),
+                     Parameters);
+}
+
+void FSyphonViewExtension::Publish_RenderThread(FRDGBuilder &GraphBuilder, ERHIFeatureLevel::Type FeatureLevel,
+                                                FRDGTextureRef Source, const FIntRect &Rect, const FIntRect &OverlayRect)
 {
 #if PLATFORM_MAC
    const FIntPoint Size = Rect.Size();
@@ -178,6 +235,9 @@ void FSyphonViewExtension::Publish_RenderThread(FRDGBuilder &GraphBuilder, FRDGT
    CopyInfo.SourcePosition = FIntVector(Rect.Min.X, Rect.Min.Y, 0);
    CopyInfo.Size = FIntVector(Size.X, Size.Y, 1);
    AddCopyTexturePass(GraphBuilder, Source, Dest, CopyInfo);
+
+   // 1b) Widgets on top of this frame's copy.
+   DrawOverlay_RenderThread(GraphBuilder, FeatureLevel, Dest, OverlayRect);
 
    // 2) Hand the previous frame's copy to Syphon. It was submitted to the same Metal queue last frame,
    //    so Syphon's blit (committed now) is guaranteed to run after it.

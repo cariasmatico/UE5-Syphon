@@ -28,13 +28,20 @@ public:
    void SetSource_GameThread(ESyphonCaptureMode Mode, FTextureRenderTargetResource *CaptureResource);
    void SetEnabled_GameThread(bool bEnabled);
 
+   /** Transparent widget texture blended over each published frame (premultiplied alpha), or null for none.
+    *  Main View: same size as the game viewport. Scene Capture: same size as the capture. */
+   void SetOverlay_GameThread(FTextureRenderTargetResource *OverlayResource);
+
    /** Size of the last frame handed to Syphon (for debug display). */
    FIntPoint GetLastOutputSize() const { return FIntPoint(LastW.load(), LastH.load()); }
 
    virtual void PostRenderViewFamily_RenderThread(FRDGBuilder &GraphBuilder, FSceneViewFamily &InViewFamily) override;
 
 private:
-   void Publish_RenderThread(FRDGBuilder &GraphBuilder, FRDGTextureRef Source, const FIntRect &Rect);
+   void Publish_RenderThread(FRDGBuilder &GraphBuilder, ERHIFeatureLevel::Type FeatureLevel,
+                             FRDGTextureRef Source, const FIntRect &Rect, const FIntRect &OverlayRect);
+   void DrawOverlay_RenderThread(FRDGBuilder &GraphBuilder, ERHIFeatureLevel::Type FeatureLevel,
+                                 FRDGTextureRef Dest, const FIntRect &OverlayRect);
    void ResetRing_RenderThread();
 
    static constexpr int32 RingSize = 3;
@@ -42,6 +49,7 @@ private:
    // Render thread state
    ESyphonCaptureMode Mode_RT = ESyphonCaptureMode::MainView;
    FTextureRenderTargetResource *CaptureResource_RT = nullptr;
+   FTextureRenderTargetResource *OverlayResource_RT = nullptr;
    bool bEnabled_RT = false;
    TRefCountPtr<IPooledRenderTarget> Ring[RingSize];
    bool RingValid[RingSize] = {};

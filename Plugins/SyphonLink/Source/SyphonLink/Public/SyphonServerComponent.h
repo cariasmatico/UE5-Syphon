@@ -83,6 +83,34 @@ public:
    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Syphon")
    bool bShowDebug = false;
 
+   /** Draw the overlay widgets on top of the Syphon image (both capture modes). Can be toggled while playing. */
+   UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Syphon|Widgets")
+   bool bRenderWidgets = true;
+
+   /** Widget classes created at Begin Play and drawn into the Syphon image only (not on screen).
+    *  Drawn in list order: the first is at the bottom. Use Get Overlay Widgets to reach the instances.
+    *  To send a widget that is already on screen, call Add Overlay Widget Instance instead. */
+   UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Syphon|Widgets")
+   TArray<TSubclassOf<class UUserWidget>> OverlayWidgetClasses;
+
+   /** Create a widget of this class and draw it into the Syphon image (not on screen). Returns the instance. */
+   UFUNCTION(BlueprintCallable, Category = "Syphon|Widgets", meta = (DeterminesOutputType = "WidgetClass"))
+   class UUserWidget *AddOverlayWidget(TSubclassOf<class UUserWidget> WidgetClass);
+
+   /** Draw an existing widget into the Syphon image. It can also be on screen (Add to Viewport):
+    *  Syphon then shows the same instance, with the same state, laid out over the whole image. */
+   UFUNCTION(BlueprintCallable, Category = "Syphon|Widgets")
+   void AddOverlayWidgetInstance(class UUserWidget *Widget);
+
+   UFUNCTION(BlueprintCallable, Category = "Syphon|Widgets")
+   void RemoveOverlayWidget(class UUserWidget *Widget);
+
+   UFUNCTION(BlueprintCallable, Category = "Syphon|Widgets")
+   void ClearOverlayWidgets();
+
+   UFUNCTION(BlueprintPure, Category = "Syphon|Widgets")
+   TArray<class UUserWidget *> GetOverlayWidgets() const;
+
    UFUNCTION(BlueprintCallable, Category = "Syphon")
    void StartServer();
    UFUNCTION(BlueprintCallable, Category = "Syphon")
@@ -116,6 +144,9 @@ private:
    void UpdateSceneCapture(float DeltaTime);
    void UpdateViewTarget();
    void ApplyWindowResolution();
+   FIntPoint GetOverlaySize() const;
+   void UpdateOverlay(float DeltaTime);
+   void StopOverlay();
 
    bool bRunning = false;
    ESyphonCaptureMode ActiveMode = ESyphonCaptureMode::MainView;
@@ -127,4 +158,14 @@ private:
    TObjectPtr<class USceneCaptureComponent2D> SceneCapture;
    UPROPERTY()
    TObjectPtr<class UTextureRenderTarget2D> RenderTarget;
+
+   UPROPERTY(Transient)
+   TArray<TObjectPtr<class UUserWidget>> OverlayWidgets;
+
+   // Transparent texture the overlay widgets are drawn into, blended over each frame.
+   UPROPERTY(Transient)
+   TObjectPtr<class UTextureRenderTarget2D> OverlayTarget;
+
+   class FWidgetRenderer *WidgetRenderer = nullptr;
+   bool bOverlayGamma = false;
 };

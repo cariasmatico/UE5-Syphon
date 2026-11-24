@@ -13,6 +13,12 @@
 #include "RenderingThread.h"
 #include "RHICommandList.h"
 #include "DynamicRHI.h"
+#include "RenderDeferredCleanup.h"
+#include "Blueprint/UserWidget.h"
+#include "Slate/WidgetRenderer.h"
+#include "Engine/UserInterfaceSettings.h"
+#include "Engine/GameViewportClient.h"
+#include "UnrealClient.h"
 #if PLATFORM_MAC
 #include "SyphonServerBridge.h"
 #endif
@@ -138,6 +144,60 @@ void USyphonServerComponent::SetServerName(const FString &NewName)
 #endif
 }
 
+UUserWidget *USyphonServerComponent::AddOverlayWidget(TSubclassOf<UUserWidget> WidgetClass)
+{
+   UWorld *World = GetWorld();
+   if (!WidgetClass || !World || !World->IsGameWorld())
+   {
+      return nullptr;
+   }
+   UUserWidget *Widget = nullptr;
+   if (APlayerController *PC = World->GetFirstPlayerController())
+   {
+      Widget = CreateWidget<UUserWidget>(PC, WidgetClass);
+   }
+   else
+   {
+      Widget = CreateWidget<UUserWidget>(World, WidgetClass);
+   }
+   if (Widget)
+   {
+      OverlayWidgets.Add(Widget);
+   }
+   return Widget;
+}
+
+void USyphonServerComponent::AddOverlayWidgetInstance(UUserWidget *Widget)
+{
+   if (IsValid(Widget))
+   {
+      OverlayWidgets.AddUnique(Widget);
+   }
+}
+
+void USyphonServerComponent::RemoveOverlayWidget(UUserWidget *Widget)
+{
+   OverlayWidgets.Remove(Widget);
+}
+
+void USyphonServerComponent::ClearOverlayWidgets()
+{
+   OverlayWidgets.Empty();
+}
+
+TArray<UUserWidget *> USyphonServerComponent::GetOverlayWidgets() const
+{
+   TArray<UUserWidget *> Result;
+   for (UUserWidget *Widget : OverlayWidgets)
+   {
+      if (IsValid(Widget))
+      {
+         Result.Add(Widget);
+      }
+   }
+   return Result;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Lifetime
 
@@ -185,6 +245,7 @@ void USyphonServerComponent::StopInternal()
    }
    bRunning = false;
 
+   StopOverlay();
    if (ViewExtension.IsValid())
    {
       // Disable on the render thread before the capture render target goes away.
@@ -230,6 +291,10 @@ void USyphonServerComponent::StopSceneCapture()
 void USyphonServerComponent::BeginPlay()
 {
    Super::BeginPlay();
+   for (const TSubclassOf<UUserWidget> &WidgetClass : OverlayWidgetClasses)
+   {
+      AddOverlayWidget(WidgetClass);
+   }
    if (bEnabled)
    {
       StartInternal();
@@ -239,6 +304,7 @@ void USyphonServerComponent::BeginPlay()
 void USyphonServerComponent::EndPlay(const EEndPlayReason::Type Reason)
 {
    StopInternal();
+   ClearOverlayWidgets();
    Super::EndPlay(Reason);
 }
 
@@ -315,6 +381,91 @@ void USyphonServerComponent::UpdateSceneCapture(float DeltaTime)
    }
 }
 
+FIntPoint USyphonServerComponent::GetOverlaySize() const
+{
+   if (ActiveMode == ESyphonCaptureMode::SceneCapture)
+   {
+      return RenderTarget ? FIntPoint(RenderTarget->SizeX, RenderTarget->SizeY) : FIntPoint::ZeroValue;
+   }
+   // Main View: the whole game viewport, the area UMG lays widgets out in on screen.
+   UWorld *World = GetWorld();
+   UGameViewportClient *GameViewport = World ? World->GetGameViewport() : nullptr;
+   if (GameViewport && GameViewport->Viewport)
+   {
+      return GameViewport->Viewport->GetSizeXY();
+   }
+   return FIntPoint::ZeroValue;
+}
+
+void USyphonServerComponent::StopOverlay()
+{
+   if (OverlayTarget && ViewExtension.IsValid())
+   {
+      // Ordered before the render target is released.
+      ViewExtension->SetOverlay_GameThread(nullptr);
+   }
+   OverlayTarget = nullptr;
+   if (WidgetRenderer)
+   {
+      BeginCleanup(WidgetRenderer);
+      WidgetRenderer = nullptr;
+   }
+}
+
+void USyphonServerComponent::UpdateOverlay(float DeltaTime)
+{
+   OverlayWidgets.RemoveAll([](const TObjectPtr<UUserWidget> &Widget) { return !IsValid(Widget); });
+
+   const FIntPoint Size = GetOverlaySize();
+   if (!bRenderWidgets || OverlayWidgets.Num() == 0 || !ViewExtension.IsValid() || Size.X <= 0 || Size.Y <= 0)
+   {
+      StopOverlay();
+      return;
+   }
+
+   // Main View's target holds display-encoded colour in a non-sRGB texture, so draw the widgets gamma-encoded
+   // (as Slate does on screen). The Scene Capture target is sRGB, so draw them linear into an sRGB texture.
+   const bool bGamma = ActiveMode == ESyphonCaptureMode::MainView;
+   if (WidgetRenderer && bOverlayGamma != bGamma)
+   {
+      StopOverlay();
+   }
+   if (!WidgetRenderer)
+   {
+      WidgetRenderer = new FWidgetRenderer(bGamma, true);
+      bOverlayGamma = bGamma;
+   }
+
+   if (!OverlayTarget)
+   {
+      OverlayTarget = FWidgetRenderer::CreateTargetFor(FVector2D(Size), TF_Bilinear, bGamma);
+      if (!OverlayTarget)
+      {
+         return;
+      }
+      ViewExtension->SetOverlay_GameThread(OverlayTarget->GameThread_GetRenderTargetResource());
+   }
+   else if (OverlayTarget->SizeX != Size.X || OverlayTarget->SizeY != Size.Y)
+   {
+      OverlayTarget->ResizeTarget(Size.X, Size.Y);
+      ViewExtension->SetOverlay_GameThread(OverlayTarget->GameThread_GetRenderTargetResource());
+   }
+
+   // Same UI scale UMG uses for a viewport of this size, so the layout matches the screen in Main View.
+   const float Scale = GetDefault<UUserInterfaceSettings>()->GetDPIScaleBasedOnSize(Size);
+
+   bool bFirst = true;
+   for (UUserWidget *Widget : OverlayWidgets)
+   {
+      // Widgets that are also on screen are already ticked by Slate this frame: don't advance their
+      // Tick / Delay nodes a second time.
+      const float WidgetDeltaTime = Widget->IsInViewport() ? 0.f : DeltaTime;
+      WidgetRenderer->SetShouldClearTarget(bFirst);
+      WidgetRenderer->DrawWidget(OverlayTarget, Widget->TakeWidget(), Scale, FVector2D(Size), WidgetDeltaTime);
+      bFirst = false;
+   }
+}
+
 void USyphonServerComponent::TickComponent(float DeltaTime, ELevelTick TickType,
                                            FActorComponentTickFunction *ThisTickFunction)
 {
@@ -364,16 +515,17 @@ void USyphonServerComponent::TickComponent(float DeltaTime, ELevelTick TickType,
    {
       UpdateViewTarget();
    }
+   UpdateOverlay(DeltaTime);
 
    if (bShowDebug && GEngine)
    {
       const FIntPoint Out = ViewExtension.IsValid() ? ViewExtension->GetLastOutputSize() : FIntPoint::ZeroValue;
       GEngine->AddOnScreenDebugMessage(
           DebugKey, 0.f, FColor::Green,
-          FString::Printf(TEXT("SyphonServer '%s' [%s] -> %s | %dx%d"),
+          FString::Printf(TEXT("SyphonServer '%s' [%s] -> %s | %dx%d | widgets: %d"),
                           *ServerName,
                           ActiveMode == ESyphonCaptureMode::MainView ? TEXT("Main View") : TEXT("Scene Capture"),
-                          *CameraActor->GetName(), Out.X, Out.Y));
+                          *CameraActor->GetName(), Out.X, Out.Y, OverlayTarget ? OverlayWidgets.Num() : 0));
    }
 #endif
 }

@@ -11,6 +11,9 @@ public class SyphonLink : ModuleRules
         PublicDependencyModuleNames.AddRange(new string[]
             { "Core", "CoreUObject", "Engine", "RHI", "RenderCore","CinematicCamera" });
 
+        PrivateDependencyModuleNames.AddRange(new string[]
+            { "Renderer", "UMG", "Slate", "SlateCore" });
+
         if (Target.Platform == UnrealTargetPlatform.Mac)
         {
             PublicFrameworks.AddRange(new string[] { "Metal", "IOSurface" });

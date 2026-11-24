@@ -17,6 +17,7 @@ Built for live audiovisual performance: pick a camera, name your server, hit Pla
 - **Two capture modes** (see [Capture modes](#capture-modes)):
   - **Main View** — publishes the camera's exact final image (lens, filmback, DOF, exposure, post-process, aspect ratio) at the game viewport's size, with no extra render cost
   - **Scene Capture** — renders the camera separately at a preset (720p / 1080p / 1440p / 4K) or custom resolution, independent of the window, optionally matching the camera's aspect ratio
+- **Widget overlay** — draw UMG widgets into the Syphon image in either mode: widgets that are on screen, or widgets made only for the Syphon output
 - **Opaque output** — frames are published with alpha = 1 by default, so clients that alpha-blend the source (Max/Jitter, compositors) don't show it as transparent or black
 - **Metal-native** — uses Syphon's Metal API and IOSurface; frames stay on the GPU, with no CPU readback
 - **Blueprint API** — Start Server, Stop Server, Set Camera, Set Capture Mode, Set Server Name; all properties editable live
@@ -73,6 +74,21 @@ Get All Actors With Tag ("SceneCam") → Get [0] → SyphonServer → Set Camera
 Scene Capture is very close to the main view but not pixel-identical (temporal effects such as auto-exposure and TSR accumulate separately; motion blur is off).
 Frames are published with one frame of latency so the GPU copy is always finished before Syphon reads it.
 
+## Widgets (UMG) in the Syphon output
+
+Both capture modes grab the image before Unreal draws its UI, so widgets added to the viewport don't reach Syphon on their own. Add them to the component instead and they are drawn on top of each frame, in the same Syphon source:
+
+- **Overlay Widget Classes** (details panel): widget classes created at Begin Play and shown only in Syphon. Use **Get Overlay Widgets** to reach the instances.
+- **Add Overlay Widget Instance** (Blueprint): send a widget you already created, for example your HUD after **Add to Viewport**. Syphon then shows the same instance as the screen, with the same state.
+- **Add Overlay Widget** (Blueprint): create a widget from a class for Syphon only; returns the instance.
+- **Remove Overlay Widget** / **Clear Overlay Widgets**, and **Render Widgets** to toggle the overlay live.
+
+Widgets are drawn in list order (the first is at the bottom) and each fills the whole image, as with Add to Viewport. They use the UMG DPI scale for the output size, so in Main View the layout matches the screen; in Scene Capture it matches a screen of the capture's size. Hiding a widget (Visibility) hides it in Syphon too.
+
+```
+Create Widget (HUD) → Add to Viewport → SyphonServer → Add Overlay Widget Instance
+```
+
 ## Component reference
 
 | Property | Type | Description |
@@ -87,7 +103,9 @@ Frames are published with one frame of latency so the GPU copy is always finishe
 | Custom Resolution | IntPoint | Used when Resolution = Custom |
 | Match Camera Aspect | Bool | Scene Capture: height follows the camera's aspect ratio |
 | Force Opaque Alpha | Bool | Publish with alpha = 1 (default on). Unreal's output alpha isn't real transparency, and in Main View it is 0 |
-| Show Debug | Bool | On-screen status messages (camera, mode, output size) |
+| Show Debug | Bool | On-screen status messages (camera, mode, output size, widget count) |
+| Render Widgets | Bool | Draw the overlay widgets into the Syphon image (live) |
+| Overlay Widget Classes | Widget class array | Widgets created at Begin Play for the Syphon image only |
 
 | Function | Description |
 |---|---|
@@ -96,17 +114,22 @@ Frames are published with one frame of latency so the GPU copy is always finishe
 | Set Capture Mode | Switch modes at runtime |
 | Set Server Name | Rename (restarts the Syphon server) |
 | Is Server Running | Pure query |
+| Add Overlay Widget | Create a widget of a class for the Syphon image; returns it |
+| Add Overlay Widget Instance | Draw an existing widget (on screen or not) into the Syphon image |
+| Remove Overlay Widget / Clear Overlay Widgets | Stop drawing one or all overlay widgets |
+| Get Overlay Widgets | The current overlay widget instances |
 
 ## Known limitations (v1.0)
 
 - **One server per app** — the server is a singleton; multiple SyphonServer components will conflict
 - **Publishes during Play (PIE) and in packaged builds** — no output while idle in the editor
 - **Server only** — receiving Syphon sources *into* UE5 (client) is planned for v2
+- **Overlay widgets are display-only** — they don't receive mouse or keyboard input through Syphon. A widget that is also on screen is drawn twice per frame; its Blueprint Tick runs once more with a delta time of 0
 - Tested on UE 5.6 and 5.7 / Apple Silicon only
 
 ## How it works
 
-A scene view extension hooks the end of the game view render. It copies either the viewport's final image (Main View) or the Scene Capture's render target (Scene Capture) into a small texture ring on the GPU, and the native Metal texture is handed to a `SyphonMetalServer` on Unreal's own Metal command queue, which shares it with other apps via IOSurface. With Force Opaque Alpha on, a tiny Metal pass first writes the frame to a BGRA8 texture with alpha = 1. All copies happen on the GPU; nothing is read back to the CPU.
+A scene view extension hooks the end of the game view render. It copies either the viewport's final image (Main View) or the Scene Capture's render target (Scene Capture) into a small texture ring on the GPU, and the native Metal texture is handed to a `SyphonMetalServer` on Unreal's own Metal command queue, which shares it with other apps via IOSurface. Overlay widgets are rendered each frame into a transparent texture with Unreal's widget renderer and blended over the copy before it is published. With Force Opaque Alpha on, a tiny Metal pass first writes the frame to a BGRA8 texture with alpha = 1. All copies happen on the GPU; nothing is read back to the CPU.
 
 ## Licence
 
