@@ -2,7 +2,7 @@
 
 **Syphon server plugin for Unreal Engine 5.**
 
-SyphonLink publishes any UE5 camera as a [Syphon](http://syphon.info) source — GPU-direct, zero-copy — so your Unreal scenes appear live in Resolume, MadMapper, OBS, Max/Jitter, or any other Syphon-aware app on the same Mac.
+SyphonLink publishes any UE5 camera as a [Syphon](http://syphon.info) source — GPU-direct, no CPU readback — so your Unreal scenes appear live in Resolume, MadMapper, OBS, Max/Jitter, or any other Syphon-aware app on the same Mac.
 
 Built for live audiovisual performance: pick a camera, name your server, hit Play.
 
@@ -14,14 +14,17 @@ Built for live audiovisual performance: pick a camera, name your server, hit Pla
 
 - **Syphon server component** — drop `SyphonServer` on any actor
 - **Camera picker** — publish whichever camera you choose; switch cameras at runtime with the `Set Camera` Blueprint node (built for scene-switching VJ setups)
-- **Fixed output resolution** — 720p / 1080p / 1440p / 4K, independent of window size
-- **Metal-native** — uses Syphon's Metal API and IOSurface; no readback, no copies
-- **Blueprint API** — Start Server, Stop Server, Set Camera, all properties editable live
+- **Two capture modes** (see [Capture modes](#capture-modes)):
+  - **Main View** — publishes the camera's exact final image (lens, filmback, DOF, exposure, post-process, aspect ratio) at the game viewport's size, with no extra render cost
+  - **Scene Capture** — renders the camera separately at a preset (720p / 1080p / 1440p / 4K) or custom resolution, independent of the window, optionally matching the camera's aspect ratio
+- **Opaque output** — frames are published with alpha = 1 by default, so clients that alpha-blend the source (Max/Jitter, compositors) don't show it as transparent or black
+- **Metal-native** — uses Syphon's Metal API and IOSurface; frames stay on the GPU, with no CPU readback
+- **Blueprint API** — Start Server, Stop Server, Set Camera, Set Capture Mode, Set Server Name; all properties editable live
 
 ## Requirements
 
 - macOS on Apple Silicon (tested on M5)
-- Unreal Engine 5.7 (other 5.x versions untested)
+- Unreal Engine 5.6 or later (tested on 5.6 and 5.7)
 - Xcode installed (for building the plugin)
 
 ## Install
@@ -32,7 +35,7 @@ Built for live audiovisual performance: pick a camera, name your server, hit Pla
 4. Build the editor target from Terminal:
 
 ```
-"/Users/Shared/Epic Games/UE_5.7/Engine/Build/BatchFiles/Mac/Build.sh" \
+"/Users/Shared/Epic Games/UE_5.6/Engine/Build/BatchFiles/Mac/Build.sh" \
   YourProjectEditor Mac Development \
   -project="/path/to/YourProject.uproject"
 ```
@@ -43,9 +46,11 @@ Built for live audiovisual performance: pick a camera, name your server, hit Pla
 
 1. Add an **Empty Actor** to your persistent level
 2. **Add Component → Syphon Server**
-3. Set **Server Name**, pick a **Camera Actor**, choose a **Resolution**
+3. Set **Server Name**, pick a **Camera Actor** and a **Capture Mode**:
+   - **Main View**: the output size is the game viewport's size (set the PIE *New Window Size*, or enable **Apply Resolution To Window** for Standalone/packaged)
+   - **Scene Capture**: choose a **Resolution** (or **Custom**)
 4. Press **Play**
-5. Open Simple Clien (https://github.com/Syphon/Simple) or a tool of your choice
+5. Open Simple Client (https://github.com/Syphon/Simple) or a tool of your choice
 
 
 ![Configuration in details view](Docs/component-details.png)
@@ -78,9 +83,11 @@ Frames are published with one frame of latency so the GPU copy is always finishe
 | Camera Actor | Actor | Camera to publish |
 | Set View Target | Bool | Main View: keep Camera Actor as player 0's view target. Turn off if your own logic drives the view target |
 | Apply Resolution To Window | Bool | Main View, Standalone/packaged only: resize the window to Resolution |
-| Resolution | Enum | 1280×720, 1920×1080, 2560×1440, 3840×2160, Custom |
+| Resolution | Enum | Scene Capture: output size. Main View: window size used by Apply Resolution To Window. 1280×720, 1920×1080, 2560×1440, 3840×2160, Custom |
 | Custom Resolution | IntPoint | Used when Resolution = Custom |
 | Match Camera Aspect | Bool | Scene Capture: height follows the camera's aspect ratio |
+| Force Opaque Alpha | Bool | Publish with alpha = 1 (default on). Unreal's output alpha isn't real transparency, and in Main View it is 0 |
+| Show Debug | Bool | On-screen status messages (camera, mode, output size) |
 
 | Function | Description |
 |---|---|
@@ -99,7 +106,7 @@ Frames are published with one frame of latency so the GPU copy is always finishe
 
 ## How it works
 
-A scene view extension hooks the end of the game view render. It copies either the viewport's final image (Main View) or the Scene Capture's render target (Scene Capture) into a small texture ring on the GPU, and the native Metal texture is handed to a `SyphonMetalServer` on Unreal's own Metal command queue, which shares it with other apps via IOSurface. No pixels are copied or downloaded from the GPU.
+A scene view extension hooks the end of the game view render. It copies either the viewport's final image (Main View) or the Scene Capture's render target (Scene Capture) into a small texture ring on the GPU, and the native Metal texture is handed to a `SyphonMetalServer` on Unreal's own Metal command queue, which shares it with other apps via IOSurface. With Force Opaque Alpha on, a tiny Metal pass first writes the frame to a BGRA8 texture with alpha = 1. All copies happen on the GPU; nothing is read back to the CPU.
 
 ## Licence
 
@@ -110,4 +117,4 @@ This plugin embeds the [Syphon framework](https://github.com/Syphon/Syphon-Frame
 ## Credits
 Built on the [Syphon framework](https://github.com/Syphon/Syphon-Framework)
 by bangnoise (Tom Butterworth) & vade (Anton Marini)
-Hige thanks to the Syphon community.
+Huge thanks to the Syphon community.
